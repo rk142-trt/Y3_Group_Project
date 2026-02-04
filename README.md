@@ -108,4 +108,4 @@ If you use this code, please cite:
 
 ## License
 
-MIT License - see LICENSE file for details.
+Imperial College London
