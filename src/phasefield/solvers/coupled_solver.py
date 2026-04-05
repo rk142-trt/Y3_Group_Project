@@ -26,7 +26,8 @@ import time
 
 # Import our modules
 import sys
-sys.path.insert(0, '/home/claude/condensate_project/src/phasefield')
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import SimulationConfig
 from physics.free_energy import FreeEnergy, RNAProteinCoupling, ChemicalPotential
 from numerics.grid import RadialGrid, RadialOperators, create_initial_droplet, create_gaussian_source
@@ -238,42 +239,46 @@ class CoupledSolver:
         self._compute_droplet_properties()
 
     def _compute_droplet_properties(self):
-        """Estimate the droplet center of mass and effective radius."""
+        """
+        Estimate the droplet center of mass and effective radius.
+
+        Uses a FIXED threshold based on the binodal concentration c_bar
+        (the midpoint of the double well), consistent with the 2D solver.
+        Only cells in the dense phase (c > c_bar) contribute to the
+        center-of-mass calculation. This avoids the artifact where the
+        dilute-phase background biases the center outward in radial
+        geometry (since radial cell volumes grow with r).
+        """
         c = self.state.c
         r = self.grid.r_centers
         V = self.grid.cell_volumes
 
-        c_max = np.max(c)
-        c_min = np.min(c)
+        c_bar = self.free_energy.c_bar  # = 4.0 for paper parameters
+        mask = c > c_bar
 
-        # If concentration variation is too small, no droplet detected
-        if c_max - c_min < 0.1:
+        n_droplet_cells = np.sum(mask)
+
+        if n_droplet_cells < 2:
             self.state.droplet_center = None
             self.state.droplet_radius = None
             return
 
-        # Threshold at midpoint between min and max
-        c_threshold = c_min + 0.5 * (c_max - c_min)
-        c_excess = np.maximum(c - c_min, 0)
+        # Center of mass: intensity-weighted using only dense-phase cells
+        c_excess = np.where(mask, c - c_bar, 0.0)
         total_excess = np.sum(c_excess * V)
 
-        if total_excess > 0:
+        if total_excess > 1e-10:
             self.state.droplet_center = np.sum(r * c_excess * V) / total_excess
         else:
-            self.state.droplet_center = None
-            self.state.droplet_radius = None
-            return
+            # Fallback: unweighted centroid of thresholded region
+            self.state.droplet_center = np.mean(r[mask])
 
-        # For radius: find where concentration drops to half-max
-        in_droplet = c > c_threshold
-        if np.any(in_droplet):
-            droplet_indices = np.where(in_droplet)[0]
-            if len(droplet_indices) > 0:
-                r_inner = r[droplet_indices[0]]
-                r_outer = r[droplet_indices[-1]]
-                self.state.droplet_radius = (r_outer - r_inner) / 2
-            else:
-                self.state.droplet_radius = None
+        # Effective radius from the thresholded region
+        droplet_indices = np.where(mask)[0]
+        if len(droplet_indices) > 0:
+            r_inner = r[droplet_indices[0]]
+            r_outer = r[droplet_indices[-1]]
+            self.state.droplet_radius = (r_outer - r_inner) / 2
         else:
             self.state.droplet_radius = None
 
